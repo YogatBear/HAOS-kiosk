@@ -74,7 +74,7 @@ try:
     elif flow.get("type") == "form":
         uid = first_user_id(flow)
         if uid:
-            result = post(f"{HA}/auth/login_flow/{flow['flow_id']}", {"user": uid})
+            result = post(f"{HA}/auth/login_flow/{flow['flow_id']}", {"user": uid, "client_id": CLIENT})
             if result.get("type") == "create_entry":
                 code = result.get("result")
             else:
@@ -91,7 +91,7 @@ except Exception as e:
 if not code and USERNAME and PASSWORD:
     try:
         flow = login_flow(["homeassistant", None])
-        result = post(f"{HA}/auth/login_flow/{flow['flow_id']}", {"username": USERNAME, "password": PASSWORD})
+        result = post(f"{HA}/auth/login_flow/{flow['flow_id']}", {"username": USERNAME, "password": PASSWORD, "client_id": CLIENT})
         if result.get("type") == "create_entry":
             code = result.get("result")
         else:
