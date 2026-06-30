@@ -50,7 +50,12 @@ def post(url, data, form=False):
         body = urllib.parse.urlencode(data).encode(); ct = "application/x-www-form-urlencoded"
     else:
         body = json.dumps(data).encode(); ct = "application/json"
-    return json.load(urllib.request.urlopen(urllib.request.Request(url, body, {"Content-Type": ct}), timeout=5))
+    try:
+        return json.load(urllib.request.urlopen(urllib.request.Request(url, body, {"Content-Type": ct}), timeout=5))
+    except urllib.error.HTTPError as e:
+        try: detail = e.read().decode("utf-8", "replace")
+        except Exception: detail = ""
+        raise Exception(f"HTTP {e.code} for {url}: {detail}")
 
 def login_flow(handler):
     return post(HA+"/auth/login_flow", {"client_id":CLIENT,"handler":handler,"redirect_uri":CLIENT})
