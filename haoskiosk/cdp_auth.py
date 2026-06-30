@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # Self-healing kiosk auth for the chromium browser option.
-# Waits for the DevTools port; if chromium is on a login page, mints a session
-# token over the trusted loopback (trusted_networks) and injects it into
-# localStorage so the dashboard loads authenticated. No-op when already authed.
+# Waits for the DevTools port; if chromium is on a login page, tries to mint
+# a session token via the trusted_networks auth provider (completing its
+# user-select step properly), then falls back to HA_USERNAME/HA_PASSWORD via
+# the homeassistant provider, and injects the token into localStorage so the
+# dashboard loads authenticated. No-op when already authed.
 import socket, base64, os, json, struct, time, urllib.request, urllib.parse, sys
 
 HA   = os.environ.get("HA_URL", "http://127.0.0.1:8123").rstrip("/")
@@ -10,6 +12,8 @@ DASH = os.environ.get("HA_DASHBOARD", "").lstrip("/")
 PORT = int(os.environ.get("REMOTE_DEBUG_PORT", "9222"))
 DASH_URL = HA + "/" + DASH if DASH else HA + "/"
 CLIENT = HA + "/"
+USERNAME = os.environ.get("HA_USERNAME", "")
+PASSWORD = os.environ.get("HA_PASSWORD", "")
 
 def log(*a): print("[cdp_auth]", *a, flush=True)
 
@@ -39,7 +43,7 @@ for _ in range(8):
     time.sleep(1)
 if not need:
     log("already authenticated; nothing to do"); sys.exit(0)
-log("login page detected; authenticating via trusted loopback")
+log("login page detected; authenticating")
 
 def post(url, data, form=False):
     if form:
@@ -48,26 +52,46 @@ def post(url, data, form=False):
         body = json.dumps(data).encode(); ct = "application/json"
     return json.load(urllib.request.urlopen(urllib.request.Request(url, body, {"Content-Type": ct}), timeout=5))
 
-USERNAME = os.environ.get("HA_USERNAME", "")
-PASSWORD = os.environ.get("HA_PASSWORD", "")
-
 def login_flow(handler):
     return post(HA+"/auth/login_flow", {"client_id":CLIENT,"handler":handler,"redirect_uri":CLIENT})
 
+def first_user_id(flow):
+    for field in flow.get("data_schema") or []:
+        if field.get("name") == "user":
+            opts = field.get("options") or []
+            if opts:
+                return opts[0][0]
+    return None
+
 code = None
+
+# Attempt 1: trusted_networks (requires HA-side config; completes the
+# "select user" step the original script never sent).
 try:
     flow = login_flow(["trusted_networks", None])
-    code = flow.get("result")
+    if flow.get("type") == "create_entry":
+        code = flow.get("result")
+    elif flow.get("type") == "form":
+        uid = first_user_id(flow)
+        if uid:
+            result = post(f"{HA}/auth/login_flow/{flow['flow_id']}", {"user": uid})
+            if result.get("type") == "create_entry":
+                code = result.get("result")
+            else:
+                log("trusted_networks user-select rejected:", result.get("errors") or result)
+        else:
+            log("trusted_networks: no eligible user in flow response")
     if not code:
         log("trusted_networks unavailable; falling back to username/password")
 except Exception as e:
     log("trusted_networks attempt failed:", e)
 
+# Attempt 2: homeassistant provider, using the credentials already
+# configured in the add-on (same as the Luakit form-fill path).
 if not code and USERNAME and PASSWORD:
     try:
         flow = login_flow(["homeassistant", None])
-        flow_id = flow.get("flow_id")
-        result = post(f"{HA}/auth/login_flow/{flow_id}", {"username": USERNAME, "password": PASSWORD})
+        result = post(f"{HA}/auth/login_flow/{flow['flow_id']}", {"username": USERNAME, "password": PASSWORD})
         if result.get("type") == "create_entry":
             code = result.get("result")
         else:
