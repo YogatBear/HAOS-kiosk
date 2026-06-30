@@ -48,11 +48,37 @@ def post(url, data, form=False):
         body = json.dumps(data).encode(); ct = "application/json"
     return json.load(urllib.request.urlopen(urllib.request.Request(url, body, {"Content-Type": ct}), timeout=5))
 
+USERNAME = os.environ.get("HA_USERNAME", "")
+PASSWORD = os.environ.get("HA_PASSWORD", "")
+
+def login_flow(handler):
+    return post(HA+"/auth/login_flow", {"client_id":CLIENT,"handler":handler,"redirect_uri":CLIENT})
+
+code = None
 try:
-    flow = post(HA+"/auth/login_flow", {"client_id":CLIENT,"handler":["trusted_networks",None],"redirect_uri":CLIENT})
+    flow = login_flow(["trusted_networks", None])
     code = flow.get("result")
     if not code:
-        log("trusted_networks unavailable; form-fill fallback not implemented"); sys.exit(0)
+        log("trusted_networks unavailable; falling back to username/password")
+except Exception as e:
+    log("trusted_networks attempt failed:", e)
+
+if not code and USERNAME and PASSWORD:
+    try:
+        flow = login_flow(["homeassistant", None])
+        flow_id = flow.get("flow_id")
+        result = post(f"{HA}/auth/login_flow/{flow_id}", {"username": USERNAME, "password": PASSWORD})
+        if result.get("type") == "create_entry":
+            code = result.get("result")
+        else:
+            log("homeassistant login rejected:", result.get("errors") or result)
+    except Exception as e:
+        log("username/password login failed:", e)
+
+if not code:
+    log("no working auth method; giving up"); sys.exit(0)
+
+try:
     tok = post(HA+"/auth/token", {"grant_type":"authorization_code","code":code,"client_id":CLIENT}, form=True)
 except Exception as e:
     log("token mint failed:", e); sys.exit(0)
